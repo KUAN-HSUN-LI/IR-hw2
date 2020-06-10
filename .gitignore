@@ -1,0 +1,13 @@
+*.pkl
+*.sh
+*.csv
+*.pptx
+*.pyc
+__pycache__
+.ipynb_checkpoints
+.vscode
+model
+data
+*.png
+*.pdf
+*.zip

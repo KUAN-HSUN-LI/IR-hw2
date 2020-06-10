@@ -1,6 +1,7 @@
 import torch
 import pandas as pd
 import pickle
+import torch.nn.functional as F
 
 
 def load_pkl(file_name):
@@ -24,3 +25,16 @@ def submit(file_name, user_size, result):
     df["UserId"] = [i for i in range(user_size)]
     df["ItemId"] = [" ".join([str(i) for i in r]) for r in result]
     df.to_csv(file_name, index=False)
+
+
+def bce_loss(x_ui, x_uj):
+    criteria = torch.nn.BCELoss()
+    loss = criteria(torch.sigmoid(x_ui), torch.ones(x_ui.shape[0]).cuda())
+    loss += criteria(torch.sigmoid(x_uj), torch.zeros(x_uj.shape[0]).cuda())
+    return loss
+
+
+def bpr_loss(x_ui, x_uj):
+    x_uij = x_ui - x_uj
+    log_prob = F.logsigmoid(x_uij).sum()
+    return -log_prob

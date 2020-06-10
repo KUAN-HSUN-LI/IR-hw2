@@ -1,62 +1,57 @@
-import numpy as np
+import pdb
+from preprocess import get_data
+from dataset import PairDataset
+from torch.utils.data import DataLoader
+from model import BCE
+from metrics import map_score
+from utils import load_pkl, get_top_k, submit
+from args import get_args
 import torch
-from torch.autograd import Variable
-import torch.nn as nn
-import pandas as pd
-dataset = []
-
 torch.manual_seed(42)
 
-with open("data/train.csv", "r") as f:
-    f.readline()
-    for line in f:
-        dataset.append([int(item) for item in line.split(",")[1].split(" ")])
 
-item_amount = max(map(max, dataset)) + 1
-user_amount = len(dataset)
-target_matrix = np.zeros([user_amount, item_amount])
+args = get_args()
 
-for userId, items in enumerate(dataset):
-    for itemId in items:
-        target_matrix[userId, itemId] = 1
+dataset = load_pkl("dataset.pkl")
 
-K = 50
-LAMBDA = 1e-2
-LR = 1e-2
-criteria = nn.BCELoss()
-
-U = Variable(torch.randn([user_amount, K]), requires_grad=True)
-P = Variable(torch.randn([K, item_amount]), requires_grad=True)
-target_matrix = torch.FloatTensor(target_matrix)
-opt = torch.optim.AdamW([U, P], lr=LR, weight_decay=LAMBDA)
-m = nn.Sigmoid()
-
-for i in range(75):
-    opt.zero_grad()
-    R = torch.mm(U, P)
-    loss = criteria(m(R), target_matrix)
-    loss.backward()
-    opt.step()
-    print(i, loss.item(), end='\r')
-
-print()
-result = torch.mm(U, P).detach().numpy()
-result = np.argsort(result, axis=1)[:, ::-1]
-
-top_50 = []
-for idx, items in enumerate(result):
-    d = []
-    raw = set(dataset[idx])
-    for item in items:
-        if len(d) == 50:
-            break
-        if item not in raw:
-            d.append(str(item))
-
-    top_50.append(" ".join(d))
+raw_set = dataset['raw_set']
+train_set = dataset['train_set']
+test_set = dataset['test_set']
+train_pair = dataset['train_pair']
+user_size = dataset['user_size']
+item_size = dataset['item_size']
 
 
-df = pd.DataFrame()
-df["UserId"] = [i for i in range(user_amount)]
-df["ItemId"] = top_50
-df.to_csv("output.csv", index=False)
+if args.train:
+    dim = 64
+    dataset = PairDataset(item_size, train_set, train_pair)
+    dataloader = DataLoader(dataset, 1024, num_workers=4)
+    model = BCE(user_size, item_size, dim).cuda()
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-1)
+    criteria = torch.nn.BCELoss()
+
+    max_score = 0
+    for epoch in range(50):
+        for idx, (u, i, j) in enumerate(dataloader):
+            opt.zero_grad()
+            x_ui, x_uj = model(u, i, j)
+            loss = criteria(x_ui, torch.ones(x_ui.shape[0]).cuda())
+            loss += criteria(x_uj, torch.zeros(x_uj.shape[0]).cuda())
+            loss.backward()
+            opt.step()
+            print(f"{idx}:{loss:.4f}", end='\r')
+        result = get_top_k(model.W.detach(), model.H.detach(), train_set, k=50, device="cuda")
+        score = map_score(result, test_set)
+        print(f"epoch{epoch}: {score:.4f}")
+        if score > max_score:
+            max_score = score
+            torch.save(model.state_dict(), f"model/bce-{dim}-{epoch}.pkl")
+
+if args.test:
+    dim = 64
+    num = 47
+    model = BCE(user_size, item_size, dim)
+    model.load_state_dict(torch.load(f"model/bce-{dim}-{num}.pkl", map_location=lambda storage, loc: storage))
+
+    result = get_top_k(model.W.detach(), model.H.detach(), raw_set, 50, "cpu")
+    submit(args.output, user_size, result)
